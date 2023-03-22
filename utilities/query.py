@@ -53,7 +53,9 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, use_synonyms=False, categories=[]):
+def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, use_synonyms=False, categories=[], boost_predicted_categories=False):
+
+    boost_predicted_categories = True
 
     if use_synonyms:
         name_field = "name.synonyms"
@@ -193,6 +195,17 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             print("Couldn't replace query for *")
     if source is not None:  # otherwise use the default and retrieve all source
         query_obj["_source"] = source
+
+    if boost_predicted_categories:
+        query_obj["query"]["function_score"]["query"]["bool"]["should"].append( 
+            {
+                "terms": {
+                    "categoryPathIds": categories,
+                    "boost": 50
+                }
+            }
+        )
+
     return query_obj
 
 
