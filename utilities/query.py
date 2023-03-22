@@ -12,6 +12,10 @@ import pandas as pd
 import fileinput
 import logging
 import sys
+import fasttext
+import re
+import nltk
+stemmer = nltk.stem.PorterStemmer()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -49,7 +53,7 @@ def create_prior_queries(doc_ids, doc_id_weights,
 
 
 # Hardcoded query here.  Better to use search templates or other query config.
-def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, use_synonyms=False):
+def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, use_synonyms=False, categories=[], boost_predicted_categories=False):
 
     if use_synonyms:
         name_field = "name.synonyms"
@@ -189,14 +193,70 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             print("Couldn't replace query for *")
     if source is not None:  # otherwise use the default and retrieve all source
         query_obj["_source"] = source
+
+    if boost_predicted_categories:
+        query_obj["query"]["function_score"]["query"]["bool"]["should"].append( 
+            {
+                "terms": {
+                    "categoryPathIds": categories,
+                    "boost": 50
+                }
+            }
+        )
+
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", use_synonyms=False):
+def predict_query_categories(query, classifier, k=10, prob_threshold=0.5):
+
+    # normalize query
+    normalized_query = query.lower()
+    normalized_query = re.sub(r'[^0-9a-z]',' ',normalized_query)
+    normalized_query = ' '.join([stemmer.stem(token.strip()) for token in normalized_query.split()])
+
+    print (f'Normalized query: {normalized_query}')
+
+    top_categories = []
+    cumulative_prob = 0
+
+    # get predicted categories
+    labels, probs = classifier.predict(normalized_query,k=k)
+
+    # keep all categories until cumulative prob exceeds 0.5
+    for label, prob in zip(labels, probs):
+
+        top_categories.append(label.split('__label__')[1])
+        cumulative_prob += prob
+        print (f'including category: {top_categories[-1]} with prob {prob}.  Cumulative prob is {cumulative_prob}')
+
+        if cumulative_prob > prob_threshold:
+            break
+
+    return top_categories
+
+
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", use_synonyms=False, categories=[]):
     #### W3: classify the query
     #### W3: create filters and boosts
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"], use_synonyms=use_synonyms)
+
+    print('Searching within categories', categories)
+
+    filters = None
+
+    if categories:
+        filters = [
+            {
+                "terms": {
+                    "categoryPathIds": categories
+                }
+            }
+        ]
+
+    source = ["name", "shortDescription", "categoryPathIds", "categoryPath"]
+    #source = None
+
+    query_obj = create_query(user_query, click_prior_query=None, filters=filters, sort=sort, sortDir=sortDir, source=source, use_synonyms=use_synonyms, categories=categories)
     logging.info(query_obj)
 
     response = client.search(query_obj, index=index)
@@ -221,6 +281,8 @@ if __name__ == "__main__":
                          help='The OpenSearch admin.  If this is set, the program will prompt for password too. If not set, use default of admin/admin')
     general.add_argument('--synonyms', action='store_true',
                          help='If set, query against the name.synonyms field.')
+    general.add_argument('--classifier',
+                         help='The query classification model to use.')
 
     args = parser.parse_args()
 
@@ -238,6 +300,11 @@ if __name__ == "__main__":
 
     if args.synonyms:
         use_synonyms = True
+
+    classifier = None
+
+    if args.classifier:
+        classifier = fasttext.load_model(args.classifier)
 
     base_url = "https://{}:{}/".format(host, port)
     opensearch = OpenSearch(
@@ -257,6 +324,12 @@ if __name__ == "__main__":
 
     while (line := input(query_prompt)) != "Exit":
         query = line.rstrip()
-        search(client=opensearch, user_query=query, index=index_name, use_synonyms=use_synonyms)
+
+        categories = []
+        if classifier:
+            categories = predict_query_categories(query,classifier)
+
+
+        search(client=opensearch, user_query=query, index=index_name, use_synonyms=use_synonyms, categories=categories, sort="regularPrice")
 
     
