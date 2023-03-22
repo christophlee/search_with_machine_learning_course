@@ -55,8 +55,6 @@ def create_prior_queries(doc_ids, doc_id_weights,
 # Hardcoded query here.  Better to use search templates or other query config.
 def create_query(user_query, click_prior_query, filters, sort="_score", sortDir="desc", size=10, source=None, use_synonyms=False, categories=[], boost_predicted_categories=False):
 
-    boost_predicted_categories = True
-
     if use_synonyms:
         name_field = "name.synonyms"
     else:
